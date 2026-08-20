@@ -106,6 +106,7 @@ export interface ShotTake {
   createdAt: string;
   approved: boolean;
   isMaster?: boolean;
+  rejected?: boolean;
   notes?: string;
   durationSec?: number;
   costUsd?: number;
@@ -454,6 +455,7 @@ export interface FilmProject {
   sfxCues: SFXCue[];
   assets: AssetItem[];
   generationJobs: GenerationJob[];
+  validationIssues?: ProductionValidationIssue[];
   zeroBudget: ZeroBudgetSettings;
   studioBranding: StudioBranding;
   timelineTracks: TimelineTrack[];

@@ -1,5 +1,7 @@
 import React from 'react';
 import { FilmProject } from '../types/film';
+import { ShotListNavigationOptions } from '../utils/shotReadiness';
+import { ProductionSupervisorPanel } from './ProductionSupervisorPanel';
 import { 
   Film, 
   Layers, 
@@ -28,12 +30,14 @@ interface ProjectDashboardProps {
   project: FilmProject;
   onNavigate: (tab: string) => void;
   onBatchGenerate: (action: string) => void;
+  onOpenShotList: (options?: ShotListNavigationOptions) => void;
 }
 
 export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   project,
   onNavigate,
   onBatchGenerate,
+  onOpenShotList,
 }) => {
   const totalShots = project.shots.length;
   const completedShots = project.shots.filter(s => s.status === 'approved').length;
@@ -134,6 +138,12 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      <ProductionSupervisorPanel
+        project={project}
+        onNavigate={onNavigate}
+        onOpenShotList={onOpenShotList}
+      />
 
       {/* Production Metrics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">

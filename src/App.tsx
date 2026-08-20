@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { theLastSignalProject } from './data/theLastSignalDemo';
 import { FilmProject, Shot, Character, Location, Scene, DialogueSegment, TimelineTrack, ContinuityItem, ProviderStatus } from './types/film';
 import { FilmStudioApiClient } from './services/apiClient';
+import { ShotListNavigationOptions } from './utils/shotReadiness';
 
 // Components
 import { HeaderNav } from './components/HeaderNav';
@@ -38,6 +39,7 @@ export function App() {
   const [isAIEditorOpen, setIsAIEditorOpen] = useState(false);
   const [selectedDesignerShot, setSelectedDesignerShot] = useState<Shot | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [shotListNavigation, setShotListNavigation] = useState<ShotListNavigationOptions>({});
 
   // Fetch provider status on mount
   useEffect(() => {
@@ -53,6 +55,16 @@ export function App() {
     project.continuityItems.filter(c => c.status !== 'resolved').length;
 
   // Handlers
+  const handleOpenShotList = (options: ShotListNavigationOptions = {}) => {
+    setShotListNavigation(options);
+    setCurrentTab('SHOT_LIST');
+  };
+
+  const handleSelectTab = (tab: string) => {
+    if (tab !== 'SHOT_LIST') setShotListNavigation({});
+    setCurrentTab(tab);
+  };
+
   const handleUpdateScreenplay = (newScript: string, extractedData?: any) => {
     if (extractedData) {
       setProject(prev => ({
@@ -367,7 +379,7 @@ export function App() {
         {/* Department Sidebar Navigation */}
         <SidebarNav
           currentTab={currentTab}
-          onSelectTab={setCurrentTab}
+          onSelectTab={handleSelectTab}
           shotCount={project.shots.length}
           dialogueCount={project.dialogueSegments.length}
         />
@@ -379,6 +391,7 @@ export function App() {
               project={project}
               onNavigate={setCurrentTab}
               onBatchGenerate={handleBatchGenerate}
+              onOpenShotList={handleOpenShotList}
             />
           )}
 
@@ -431,6 +444,8 @@ export function App() {
               onUpdateShot={handleUpdateShot}
               onOpenShotDesigner={(shot) => setSelectedDesignerShot(shot)}
               onBatchGenerateStoryboards={handleBatchGenerateStoryboards}
+              initialSceneId={shotListNavigation.sceneId}
+              initialReadinessFilter={shotListNavigation.readinessFilter}
             />
           )}
 

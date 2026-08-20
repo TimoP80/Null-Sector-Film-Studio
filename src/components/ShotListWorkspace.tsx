@@ -1,17 +1,29 @@
 import React, { useState } from 'react';
 import { FilmProject, Shot } from '../types/film';
-import { 
-  ListFilter, 
-  Search, 
-  CheckCircle2, 
-  Clock, 
-  Sparkles, 
-  Video, 
-  Image as ImageIcon, 
+import {
+  calculateSceneReadiness,
+  calculateShotListReadiness,
+  calculateShotReadiness,
+  ReadinessCheckStatus,
+  ShotListReadinessFilter,
+  ShotReadinessState,
+} from '../utils/shotReadiness';
+import {
+  ListFilter,
+  Search,
+  CheckCircle2,
+  Clock,
+  Sparkles,
+  Video,
+  Image as ImageIcon,
   SlidersHorizontal,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Eye,
   Plus,
+  Star,
+  AlertTriangle,
   Play
 } from 'lucide-react';
 
@@ -21,7 +33,65 @@ interface ShotListWorkspaceProps {
   onUpdateShot: (shot: Shot) => void;
   onOpenShotDesigner: (shot: Shot) => void;
   onBatchGenerateStoryboards: (shotIds: string[]) => void;
+  initialSceneId?: string;
+  initialReadinessFilter?: ShotListReadinessFilter;
 }
+
+const getReadinessBadgeClass = (state: ShotReadinessState): string => {
+  switch (state) {
+    case 'PRODUCTION READY':
+      return 'bg-[#122018] text-emerald-400 border-emerald-500/40';
+    case 'MASTER APPROVED':
+      return 'bg-[#122018] text-emerald-300 border-emerald-500/40';
+    case 'TAKES AVAILABLE':
+      return 'bg-[#151D24] text-cyan-400 border-cyan-500/40';
+    case 'READY FOR GENERATION':
+      return 'bg-[#201B12] text-[#CBA135] border-[#CBA135]/40';
+    case 'IN PROGRESS':
+      return 'bg-[#151619] text-[#8E9299] border-[#2A2A2D]';
+    default:
+      return 'bg-[#261214] text-red-300 border-red-500/40';
+  }
+};
+
+const getReadinessCheckClass = (status: ReadinessCheckStatus): string => {
+  switch (status) {
+    case 'passed':
+      return 'text-emerald-400';
+    case 'warning':
+      return 'text-[#CBA135]';
+    case 'blocked':
+      return 'text-red-300';
+    default:
+      return 'text-[#666]';
+  }
+};
+
+const matchesReadinessFilter = (
+  project: FilmProject,
+  shot: Shot,
+  filter: ShotListReadinessFilter
+): boolean => {
+  if (filter === 'rejected_takes') return shot.takes.some(take => take.rejected);
+
+  const readiness = calculateShotReadiness(project, shot);
+  const checkStatus = (key: string) => readiness.checks.find(check => check.key === key)?.status;
+
+  switch (filter) {
+    case 'missing_master':
+      return checkStatus('approved_master_take') === 'blocked';
+    case 'missing_visual_take':
+      return checkStatus('generated_visual_take') === 'blocked';
+    case 'continuity':
+      return checkStatus('continuity') === 'blocked' || checkStatus('continuity') === 'warning';
+    case 'dialogue':
+      return checkStatus('dialogue_coverage') === 'blocked';
+    case 'not_ready':
+      return readiness.state === 'NOT READY';
+    default:
+      return true;
+  }
+};
 
 export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
   project,
@@ -29,13 +99,17 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
   onUpdateShot,
   onOpenShotDesigner,
   onBatchGenerateStoryboards,
+  initialSceneId,
+  initialReadinessFilter,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterAct, setFilterAct] = useState<string>('ALL');
-  const [filterScene, setFilterScene] = useState<string>('ALL');
+  const [filterScene, setFilterScene] = useState<string>(initialSceneId || 'ALL');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [filterShotSize, setFilterShotSize] = useState<string>('ALL');
+  const [filterReadiness, setFilterReadiness] = useState<ShotListReadinessFilter | 'ALL'>(initialReadinessFilter || 'ALL');
   const [selectedShotIds, setSelectedShotIds] = useState<string[]>([]);
+  const [expandedReadinessShotId, setExpandedReadinessShotId] = useState<string | null>(null);
 
   // Filtered Shots
   const filteredShots = project.shots.filter((shot) => {
@@ -43,6 +117,7 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
     if (filterScene !== 'ALL' && shot.sceneId !== filterScene) return false;
     if (filterStatus !== 'ALL' && shot.status !== filterStatus) return false;
     if (filterShotSize !== 'ALL' && shot.camera.shotSize !== filterShotSize) return false;
+    if (filterReadiness !== 'ALL' && !matchesReadinessFilter(project, shot, filterReadiness)) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       const matchId = shot.id.toLowerCase().includes(q);
@@ -52,6 +127,19 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
     }
     return true;
   });
+
+  const readinessSummary = calculateShotListReadiness(project, filteredShots);
+  const displayedSceneIds = Array.from(new Set(filteredShots.map(shot => shot.sceneId)));
+  const displayedScene = filterScene !== 'ALL'
+    ? project.scenes.find(scene => scene.id === filterScene)
+    : displayedSceneIds.length === 1
+    ? project.scenes.find(scene => scene.id === displayedSceneIds[0])
+    : undefined;
+  const readinessSummaryLabel = displayedScene
+    ? `SCENE ${String(displayedScene.sceneNumber).padStart(2, '0')}`
+    : displayedSceneIds.length > 1
+    ? 'DISPLAYED SCENES'
+    : 'DISPLAYED SHOTS';
 
   const handleSelectAll = () => {
     if (selectedShotIds.length === filteredShots.length) {
@@ -180,13 +268,28 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
             <option value="extreme_close_up">EXTREME CLOSE-UP (ECU)</option>
           </select>
 
-          {(filterAct !== 'ALL' || filterScene !== 'ALL' || filterStatus !== 'ALL' || filterShotSize !== 'ALL' || searchQuery) && (
+          <select
+            value={filterReadiness}
+            onChange={(e) => setFilterReadiness(e.target.value as ShotListReadinessFilter | 'ALL')}
+            className="bg-[#151619] border border-[#2A2A2D] rounded-sm px-2 py-1 text-[#8E9299] text-xs focus:outline-none focus:border-[#CBA135]"
+          >
+            <option value="ALL">ALL READINESS</option>
+            <option value="missing_master">MISSING MASTER</option>
+            <option value="missing_visual_take">MISSING VISUAL TAKE</option>
+            <option value="continuity">CONTINUITY ISSUES</option>
+            <option value="dialogue">MISSING DIALOGUE</option>
+            <option value="rejected_takes">REJECTED TAKES</option>
+            <option value="not_ready">NOT READY</option>
+          </select>
+
+          {(filterAct !== 'ALL' || filterScene !== 'ALL' || filterStatus !== 'ALL' || filterShotSize !== 'ALL' || filterReadiness !== 'ALL' || searchQuery) && (
             <button
               onClick={() => {
                 setFilterAct('ALL');
                 setFilterScene('ALL');
                 setFilterStatus('ALL');
                 setFilterShotSize('ALL');
+                setFilterReadiness('ALL');
                 setSearchQuery('');
               }}
               className="text-[10px] text-[#CBA135] hover:underline px-1 uppercase tracking-wider font-mono"
@@ -194,6 +297,41 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
               Reset Filters
             </button>
           )}
+        </div>
+
+        {/* Scene Readiness Summary */}
+        <div className="border-t border-[#222225] pt-2.5 flex flex-col lg:flex-row lg:items-center gap-2.5 font-mono">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#CBA135]">{readinessSummaryLabel}</span>
+            <span className="text-[10px] text-[#8E9299]">
+              {readinessSummary.productionReadyShots} / {readinessSummary.totalShots} PRODUCTION READY — {readinessSummary.readinessPercentage}%
+            </span>
+          </div>
+
+          <div className="flex-1 min-w-[120px] h-1.5 rounded-full bg-[#151619] border border-[#2A2A2D] overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 transition-all duration-300"
+              style={{ width: `${readinessSummary.readinessPercentage}%` }}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] uppercase text-[#8E9299]">
+            <span className="flex items-center gap-1 text-emerald-400">
+              <CheckCircle2 className="w-3 h-3" /> {readinessSummary.productionReadyShots} Ready
+            </span>
+            <span className="flex items-center gap-1 text-emerald-300">
+              <Star className="w-3 h-3" /> {readinessSummary.masterApprovedShots} Master Approved
+            </span>
+            <span className="flex items-center gap-1 text-cyan-400">
+              <Play className="w-3 h-3" /> {readinessSummary.generatedTakeShots} Takes
+            </span>
+            <span className="flex items-center gap-1 text-[#CBA135]">
+              <Sparkles className="w-3 h-3" /> {readinessSummary.readyForGenerationShots} Ready for Generation
+            </span>
+            <span className="flex items-center gap-1 text-red-300">
+              <AlertTriangle className="w-3 h-3" /> {readinessSummary.notReadyShots} Not Ready
+            </span>
+          </div>
         </div>
       </div>
 
@@ -218,6 +356,7 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
               <th className="p-2.5">Description</th>
               <th className="p-2.5">Dur</th>
               <th className="p-2.5">Status</th>
+              <th className="p-2.5">Readiness</th>
               <th className="p-2.5 text-right">Action</th>
             </tr>
           </thead>
@@ -225,6 +364,9 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
             {filteredShots.map((shot) => {
               const isSelected = selectedShotIds.includes(shot.id);
               const scene = project.scenes.find(s => s.id === shot.sceneId);
+              const readiness = calculateShotReadiness(project, shot);
+              const sceneReadiness = calculateSceneReadiness(project, shot.sceneId);
+              const isReadinessExpanded = expandedReadinessShotId === shot.id;
 
               return (
                 <tr
@@ -275,6 +417,9 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
                     <div className="text-[10px] text-[#666] font-mono truncate max-w-[140px]">
                       {scene?.heading || 'INT. SCENE'}
                     </div>
+                    <div className={`text-[8px] font-mono uppercase mt-1 ${getReadinessCheckClass(sceneReadiness.state === 'PRODUCTION READY' ? 'passed' : sceneReadiness.state === 'NOT READY' ? 'blocked' : 'warning')}`}>
+                      SCENE: {sceneReadiness.state} ({sceneReadiness.score}%)
+                    </div>
                   </td>
 
                   <td className="p-2.5 whitespace-nowrap">
@@ -297,21 +442,50 @@ export const ShotListWorkspace: React.FC<ShotListWorkspaceProps> = ({
                   </td>
 
                   <td className="p-2.5 font-mono text-[#E0E0E0] whitespace-nowrap text-[11px]">
-                    {shot.durationSec}s
-                  </td>
+                    {shot.durationSec}s                  </td>
 
                   <td className="p-2.5 whitespace-nowrap">
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded-sm font-semibold uppercase ${
-                      shot.status === 'approved' 
-                        ? 'bg-[#122018] text-emerald-400 border border-emerald-500/40' 
-                        : shot.status === 'generating' 
-                        ? 'bg-[#151D24] text-cyan-400 border border-cyan-500/40 animate-pulse' 
+                      shot.status === 'approved'
+                        ? 'bg-[#122018] text-emerald-400 border border-emerald-500/40'
+                        : shot.status === 'generating'
+                        ? 'bg-[#151D24] text-cyan-400 border border-cyan-500/40 animate-pulse'
                         : shot.status === 'review'
                         ? 'bg-[#201B12] text-[#CBA135] border border-[#CBA135]/40'
                         : 'bg-[#151619] text-[#666] border border-[#222225]'
                     }`}>
                       {shot.status}
                     </span>
+                  </td>
+
+                  <td className="p-2.5 align-top min-w-[170px]">
+                    <button
+                      onClick={() => setExpandedReadinessShotId(isReadinessExpanded ? null : shot.id)}
+                      className={`text-[9px] font-mono px-2 py-1 rounded-sm font-semibold uppercase border inline-flex items-center gap-1.5 ${getReadinessBadgeClass(readiness.state)}`}
+                      title="Show shot readiness breakdown"
+                    >
+                      <span>{readiness.state}</span>
+                      <span className="text-[8px] opacity-80">{readiness.score}%</span>
+                      {isReadinessExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    </button>
+                    {isReadinessExpanded && (
+                      <div className="mt-2 p-2 rounded-sm bg-[#0E0E10] border border-[#2A2A2D] space-y-1.5 min-w-[260px] max-w-[330px] whitespace-normal">
+                        <div className="flex items-center justify-between text-[9px] font-mono uppercase text-[#8E9299] border-b border-[#222225] pb-1">
+                          <span>READINESS BREAKDOWN</span>
+                          <span className="text-[#CBA135]">{readiness.unresolvedIssueCount} ISSUE{readiness.unresolvedIssueCount === 1 ? '' : 'S'}</span>
+                        </div>
+                        {readiness.checks.map(check => (
+                          <div key={check.key} className="flex items-start gap-1.5 text-[9px] font-mono">
+                            <span className={`font-bold uppercase ${getReadinessCheckClass(check.status)}`}>
+                              {check.status === 'passed' ? 'OK' : check.status === 'not_applicable' ? 'N/A' : check.status === 'warning' ? 'WARN' : 'BLOCK'}
+                            </span>
+                            <span className="text-[#AAA]">
+                              <strong className="text-[#E0E0E0]">{check.label}:</strong> {check.detail}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </td>
 
                   <td className="p-2.5 text-right whitespace-nowrap">
