@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --accent: #CBA135;
+    --accent-hover: #DFB548;
+    --accent-dim: rgba(203, 161, 53, 0.15);
+    --accent-border: rgba(203, 161, 53, 0.35);
+    --bg-app: #0A0A0B;
+    --bg-darker: #050505;
+    --bg-header: #0E0E10;
+    --surface: #151619;
+    --surface-secondary: #1A1A1C;
+    --surface-hover: #202024;
+    --border: #2A2A2D;
+    --border-subtle: #222225;
+    --border-highlight: #3A3A40;
+    --text-primary: #E0E0E0;
+    --text-muted: #8E9299;
+    --text-dim: #5E626A;
+  }
+
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Technical Dashboard & Data Grid Utility Classes */
+.panel {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.panel-subtle {
+  background-color: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.panel-dark {
+  background-color: var(--bg-darker);
+  border: 1px solid var(--border);
+}
+
+.text-accent {
+  color: var(--accent);
+}
+
+.bg-accent {
+  background-color: var(--accent);
+}
+
+.bg-accent-dim {
+  background-color: var(--accent-dim);
+}
+
+.border-accent {
+  border-color: var(--accent);
+}
+
+.border-accent-dim {
+  border-color: var(--accent-border);
+}
+
+.font-mono-tech {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  letter-spacing: -0.02em;
+}
+
+/* Custom Sleek Scrollbar */
+.scroll-hide::-webkit-scrollbar {
+  display: none;
+}
+.scroll-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0A0B;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #252528;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #38383E;
+}
+
+/* Data Grid row hover & table lines */
+.data-grid-row {
+  border-bottom: 1px solid #1E1E22;
+  transition: background-color 0.15s ease;
+}
+
+.data-grid-row:hover {
+  background-color: rgba(203, 161, 53, 0.04);
+}

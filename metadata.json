@@ -1,0 +1,6 @@
+{
+  "name": "AI Filmmaking Production Studio",
+  "description": "Professional AI filmmaking studio for screenplay analysis, character & location continuity, shot design, storyboarding, TTS dialogue, sound design, and multi-track timeline editing.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
