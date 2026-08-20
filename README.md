@@ -1,3 +1,5 @@
+<img width="2752" height="1536" alt="Logo_for_Null_Sector_Film_202608201144" src="https://github.com/user-attachments/assets/a2ac68df-3581-477e-979a-9df6b8cccfa9" />
+
 # AI Filmmaking Production Studio
 
 A browser-based production workspace for planning, generating, reviewing, and assembling AI-assisted films. The studio keeps screenplay, scene, character, location, shot, dialogue, audio, continuity, generation, and validation data in one structured film project.
