@@ -31,6 +31,7 @@ interface ProjectDashboardProps {
   onNavigate: (tab: string) => void;
   onBatchGenerate: (action: string) => void;
   onOpenShotList: (options?: ShotListNavigationOptions) => void;
+  onOpenShot?: (shotId: string, takeId?: string) => void;
 }
 
 export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
@@ -38,6 +39,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
   onNavigate,
   onBatchGenerate,
   onOpenShotList,
+  onOpenShot,
 }) => {
   const totalShots = project.shots.length;
   const completedShots = project.shots.filter(s => s.status === 'approved').length;
@@ -143,6 +145,7 @@ export const ProjectDashboard: React.FC<ProjectDashboardProps> = ({
         project={project}
         onNavigate={onNavigate}
         onOpenShotList={onOpenShotList}
+        onOpenShot={onOpenShot}
       />
 
       {/* Production Metrics Grid */}

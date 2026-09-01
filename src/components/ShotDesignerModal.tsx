@@ -9,6 +9,10 @@ import {
 } from 'lucide-react';
 import { ShotDesignerParameterPanel, ShotDesignerTab } from './ShotDesignerParameterPanel';
 import { ShotDesignerPreviewPane } from './ShotDesignerPreviewPane';
+import { ImageToVideoPanel } from './ImageToVideoPanel';
+import { buildImageToVideoPrompt } from '../videoPromptBuilder';
+import { videoJobRuntime } from '../videoJobRuntime';
+import { VideoGenerationJob } from '../videoTypes';
 
 interface ShotDesignerModalProps {
   shot: Shot;
@@ -188,6 +192,7 @@ export const ShotDesignerModal: React.FC<ShotDesignerModalProps> = ({
   const [isAiPolishing, setIsAiPolishing] = useState(false);
   const [autoSyncPrompt, setAutoSyncPrompt] = useState(true);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3.1-flash-image');
+  const [showImageToVideo, setShowImageToVideo] = useState(false);
 
   // Helper to compile all structured parameters into a cinematic prompt
   const compileCinematicPrompt = (targetShot: Shot): string => {
@@ -453,7 +458,22 @@ Return ONLY the refined prompt text without intro, quotes, or markdown.`;
             onRejectTake={handleRejectTake}
           />
 
-          <ShotDesignerParameterPanel
+          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-4 pt-3 bg-[#0E0E10]">
+            <button onClick={() => setShowImageToVideo(value => !value)} className="px-3 py-2 rounded-sm bg-cyan-950 text-cyan-300 border border-cyan-500/40 text-[10px] font-mono font-bold uppercase">
+              {showImageToVideo ? 'Close Image → Video' : 'Open Image → Video'}
+            </button>
+          </div>
+          {showImageToVideo ? <div className="p-4 overflow-y-auto"><ImageToVideoPanel shot={currentShot} continuityInstructions={project.continuityItems.filter(item => item.shotIds.includes(currentShot.id) && item.status !== 'resolved').map(item => item.description)} onUpdateShot={setCurrentShot} onQueueJob={(legacyJob) => {
+              const job: VideoGenerationJob = {
+                id: legacyJob.id, projectId: project.id, sceneId: legacyJob.sceneId, shotId: legacyJob.shotId,
+                providerId: 'local', modelId: legacyJob.model, status: 'queued', sourceImage: currentShot.storyboardImageUrl || '',
+                prompt: legacyJob.prompt, duration: 4, resolution: '480p', createdAt: legacyJob.createdAt,
+                generationParameters: legacyJob.generationParameters, motionSpecification: legacyJob.motionSpecification,
+                takeId: `take_${legacyJob.id}`,
+              };
+              videoJobRuntime.enqueue(job);
+            }} /></div> : <ShotDesignerParameterPanel
             currentShot={currentShot}
             activeTab={activeTab}
             onTabChange={setActiveTab}
@@ -468,7 +488,8 @@ Return ONLY the refined prompt text without intro, quotes, or markdown.`;
             movementPresets={MOVEMENT_PRESETS}
             lightingPresets={LIGHTING_PRESETS}
             getKelvinColorStyle={getKelvinColorStyle}
-          />
+          />}
+          </div>
         </div>
       </div>
     </div>

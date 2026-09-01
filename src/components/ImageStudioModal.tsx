@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { FilmProject, Shot } from '../types/film';
 import { FilmStudioApiClient } from '../services/apiClient';
-import { generatePromptFaithfulVisual } from '../utils/cinematicVisualRenderer';
+import { ProviderErrorNotice } from './ProviderErrorNotice';
 import { 
   Sparkles, 
   Image as ImageIcon, 
@@ -23,13 +23,22 @@ import {
   CheckCircle2
 } from 'lucide-react';
 
+type ImageOperationStatus = 'idle' | 'generating' | 'success' | 'failed';
+
+type ImageSaveMetadata = {
+  prompt: string;
+  model: string;
+  operation: 'create' | 'edit';
+};
+
 interface ImageStudioModalProps {
   project: FilmProject;
   isOpen: boolean;
   onClose: () => void;
   targetShot?: Shot;
-  onSaveImageToShot?: (shotId: string, imageUrl: string) => void;
+  onSaveImageToShot?: (shotId: string, imageUrl: string, metadata: ImageSaveMetadata) => void;
   onSaveToAssets?: (imageUrl: string, title: string, category: string) => void;
+  onOpenProviderSettings?: () => void;
 }
 
 export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
@@ -39,6 +48,7 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
   targetShot,
   onSaveImageToShot,
   onSaveToAssets,
+  onOpenProviderSettings,
 }) => {
   const [activeTab, setActiveTab] = useState<'create' | 'edit'>('create');
   const [selectedModel, setSelectedModel] = useState<string>('gemini-3.1-flash-image');
@@ -51,6 +61,8 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
   const [imageSize, setImageSize] = useState<'512px' | '1K' | '2K' | '4K'>('1K');
   const [referenceImage, setReferenceImage] = useState<string | null>(targetShot?.storyboardImageUrl || null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<ImageOperationStatus>('idle');
+  const [generationError, setGenerationError] = useState<unknown | null>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(targetShot?.storyboardImageUrl || null);
 
   // Edit state
@@ -59,6 +71,7 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
   );
   const [editPrompt, setEditPrompt] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+  const [editError, setEditError] = useState<unknown | null>(null);
   const [editedImage, setEditedImage] = useState<string | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50); // 0 to 100%
   const [editSuccessMessage, setEditSuccessMessage] = useState<string | null>(null);
@@ -68,39 +81,24 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
   const handleGenerateCreate = async () => {
     if (!createPrompt.trim()) return;
     setIsGenerating(true);
+    setGenerationStatus('generating');
+    setGenerationError(null);
+    setGeneratedImage(null);
+
     try {
-      let url: string;
-      try {
-        url = await FilmStudioApiClient.generateImage(
-          createPrompt,
-          aspectRatio,
-          imageSize,
-          referenceImage || undefined,
-          selectedModel
-        );
-      } catch (apiErr) {
-        console.warn('API error in Image Studio, synthesizing prompt-faithful frame:', apiErr);
-        url = generatePromptFaithfulVisual({
-          prompt: createPrompt,
-          title: targetShot?.title || 'CONCEPT FRAME',
-          shotId: targetShot?.id || 'IMAGE_STUDIO',
-          shotSize: targetShot?.camera.shotSize,
-          lens: targetShot?.camera.lens,
-          lighting: targetShot?.environment.lightingSetup,
-          colorTemp: String(targetShot?.environment.colorTempKelvin || '5600K'),
-          aspectRatio: aspectRatio as any,
-        });
-      }
+      const url = await FilmStudioApiClient.generateImage(
+        createPrompt,
+        aspectRatio,
+        imageSize,
+        referenceImage || undefined,
+        selectedModel
+      );
       setGeneratedImage(url);
-    } catch (e: any) {
-      console.error('Image creation error:', e);
-      const fallback = generatePromptFaithfulVisual({
-        prompt: createPrompt,
-        title: targetShot?.title || 'CONCEPT FRAME',
-        shotId: targetShot?.id || 'IMAGE_STUDIO',
-        aspectRatio: aspectRatio as any,
-      });
-      setGeneratedImage(fallback);
+      setGenerationStatus('success');
+    } catch (error: unknown) {
+      console.error('Image creation error:', error);
+      setGenerationError(error);
+      setGenerationStatus('failed');
     } finally {
       setIsGenerating(false);
     }
@@ -109,6 +107,8 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
   const handleExecuteEdit = async () => {
     if (!editPrompt.trim() || !sourceImage) return;
     setIsEditing(true);
+    setEditError(null);
+    setEditedImage(null);
     try {
       const url = await FilmStudioApiClient.editImage(
         editPrompt,
@@ -121,9 +121,9 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
       setEditedImage(url);
       setEditSuccessMessage(`Image successfully edited using ${selectedModel === 'gemini-3.1-flash-lite-image' ? 'Nano Banana 2 Lite' : 'Nano Banana 2'}!`);
       setTimeout(() => setEditSuccessMessage(null), 4000);
-    } catch (e: any) {
-      console.error('Image edit error:', e);
-      alert(`Image edit failed: ${e.message || 'Check API key or image format.'}`);
+    } catch (error: unknown) {
+      console.error('Image edit error:', error);
+      setEditError(error);
     } finally {
       setIsEditing(false);
     }
@@ -357,6 +357,25 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
 
               {/* Right Preview Stage */}
               <div className="flex-1 bg-[#070709] p-8 flex flex-col items-center justify-center relative overflow-hidden">
+                {isGenerating && (
+                  <div className="absolute top-6 left-6 right-6 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono uppercase tracking-wider flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 animate-spin" /> GENERATING — WAITING FOR GEMINI IMAGE DATA
+                  </div>
+                )}
+                {generationError && !isGenerating && (
+                  <ProviderErrorNotice
+                    error={generationError}
+                    provider="Gemini image generation"
+                    model={selectedModel}
+                    onOpenSettings={onOpenProviderSettings}
+                    className="absolute top-6 left-6 right-6"
+                  />
+                )}
+                {!isGenerating && !generationError && generationStatus === 'success' && (
+                  <div className="absolute top-6 left-6 right-6 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono uppercase tracking-wider flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4" /> GENERATION SUCCESS — REAL GEMINI IMAGE
+                  </div>
+                )}
                 {generatedImage ? (
                   <div className="relative max-w-full max-h-full flex flex-col items-center">
                     <div className="relative rounded-xl overflow-hidden border border-[#2A2A35] shadow-2xl bg-black">
@@ -371,7 +390,11 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
                       {targetShot && onSaveImageToShot && (
                         <button
                           onClick={() => {
-                            onSaveImageToShot(targetShot.id, generatedImage);
+                            onSaveImageToShot(targetShot.id, generatedImage, {
+                              prompt: createPrompt,
+                              model: selectedModel,
+                              operation: 'create',
+                            });
                             alert(`Saved image to Shot #${targetShot.shotNumber} (${targetShot.title})!`);
                           }}
                           className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-xl flex items-center gap-1.5 shadow"
@@ -486,6 +509,15 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
                     <span>{editSuccessMessage}</span>
                   </div>
                 )}
+                {editError && (
+                  <ProviderErrorNotice
+                    error={editError}
+                    provider="Gemini image editing"
+                    model={selectedModel}
+                    onOpenSettings={onOpenProviderSettings}
+                    className="animate-in fade-in"
+                  />
+                )}
 
                 <button
                   onClick={handleExecuteEdit}
@@ -571,7 +603,11 @@ export const ImageStudioModal: React.FC<ImageStudioModalProps> = ({
                       {editedImage && targetShot && onSaveImageToShot && (
                         <button
                           onClick={() => {
-                            onSaveImageToShot(targetShot.id, editedImage);
+                            onSaveImageToShot(targetShot.id, editedImage, {
+                              prompt: editPrompt,
+                              model: selectedModel,
+                              operation: 'edit',
+                            });
                             alert(`Saved edited image to Shot #${targetShot.shotNumber}!`);
                           }}
                           className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded-xl flex items-center gap-1.5 shadow"

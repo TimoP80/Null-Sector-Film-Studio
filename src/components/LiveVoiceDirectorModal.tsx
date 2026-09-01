@@ -58,7 +58,13 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const micStateRef = useRef<{
+    isMuted: boolean;
+    mode: 'open_mic' | 'push_to_talk';
+    isPushActive: boolean;
+  }>({ isMuted: false, mode: 'open_mic', isPushActive: false });
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
@@ -94,12 +100,19 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
 
       // Audio recording processor (convert to 16kHz PCM)
       const inputCtx = new AudioCtx({ sampleRate: 16000 });
+      inputAudioContextRef.current = inputCtx;
+      // Browsers may suspend contexts created outside a direct user gesture.
+      // Resume explicitly so ScriptProcessorNode starts receiving microphone frames.
+      await inputCtx.resume().catch((error) => {
+        console.warn('Could not resume microphone audio context:', error);
+      });
       const source = inputCtx.createMediaStreamSource(stream);
       const processor = inputCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (isMuted || (mode === 'push_to_talk' && !isPushActive)) {
+        const micState = micStateRef.current;
+        if (micState.isMuted || (micState.mode === 'push_to_talk' && !micState.isPushActive)) {
           setMicLevel(0);
           return;
         }
@@ -225,6 +238,10 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
+    }
+    if (inputAudioContextRef.current) {
+      void inputAudioContextRef.current.close();
+      inputAudioContextRef.current = null;
     }
     stopAllAudio();
     setIsConnected(false);
@@ -488,7 +505,11 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
                   )}
                 </div>
                 <button
-                  onClick={() => setIsMuted(!isMuted)}
+                  onClick={() => {
+                    const nextMuted = !isMuted;
+                    micStateRef.current.isMuted = nextMuted;
+                    setIsMuted(nextMuted);
+                  }}
                   className={`absolute -bottom-2 -right-1 text-[9px] font-bold px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
                     isMuted ? 'bg-rose-500 text-white' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
                   }`}
@@ -503,7 +524,10 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
           <div className="relative z-10 flex items-center justify-between pt-3 border-t border-[#222226]">
             <div className="flex items-center gap-2 bg-[#17171C] p-1 rounded-xl border border-neutral-800 text-xs">
               <button
-                onClick={() => setMode('open_mic')}
+                onClick={() => {
+                  micStateRef.current.mode = 'open_mic';
+                  setMode('open_mic');
+                }}
                 className={`px-3 py-1 rounded-lg font-medium transition-colors ${
                   mode === 'open_mic' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-neutral-400 hover:text-neutral-200'
                 }`}
@@ -511,7 +535,10 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
                 Continuous Open Mic
               </button>
               <button
-                onClick={() => setMode('push_to_talk')}
+                onClick={() => {
+                  micStateRef.current.mode = 'push_to_talk';
+                  setMode('push_to_talk');
+                }}
                 className={`px-3 py-1 rounded-lg font-medium transition-colors ${
                   mode === 'push_to_talk' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-neutral-400 hover:text-neutral-200'
                 }`}
@@ -522,10 +549,22 @@ export const LiveVoiceDirectorModal: React.FC<LiveVoiceDirectorModalProps> = ({
 
             {mode === 'push_to_talk' && (
               <button
-                onMouseDown={() => setIsPushActive(true)}
-                onMouseUp={() => setIsPushActive(false)}
-                onTouchStart={() => setIsPushActive(true)}
-                onTouchEnd={() => setIsPushActive(false)}
+                onMouseDown={() => {
+                  micStateRef.current.isPushActive = true;
+                  setIsPushActive(true);
+                }}
+                onMouseUp={() => {
+                  micStateRef.current.isPushActive = false;
+                  setIsPushActive(false);
+                }}
+                onTouchStart={() => {
+                  micStateRef.current.isPushActive = true;
+                  setIsPushActive(true);
+                }}
+                onTouchEnd={() => {
+                  micStateRef.current.isPushActive = false;
+                  setIsPushActive(false);
+                }}
                 className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all select-none ${
                   isPushActive 
                     ? 'bg-cyan-500 text-black shadow-[0_0_20px_rgba(6,182,212,0.6)] scale-95' 

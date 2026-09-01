@@ -110,6 +110,9 @@ export interface ShotTake {
   notes?: string;
   durationSec?: number;
   costUsd?: number;
+  sourceImage?: string;
+  providerJobId?: string;
+  generationParameters?: Record<string, unknown>;
 }
 
 export interface Shot {
@@ -388,6 +391,7 @@ export interface GenerationJob {
   progress: number; // 0 to 100
   costEstimateUsd: number;
   createdAt: string;
+  startedAt?: string;
   completedAt?: string;
   error?: string;
   resultUrl?: string;
@@ -464,10 +468,76 @@ export interface FilmProject {
 }
 
 export interface ProviderStatus {
-  imageProvider: { name: string; available: boolean; model: string };
-  videoProvider: { name: string; available: boolean; model: string };
+  imageProvider: {
+    name: string;
+    available: boolean;
+    model: string;
+    configured?: boolean;
+    description?: string;
+    liteModel?: string;
+    liteAvailable?: boolean;
+    quotaStatus?: 'available' | 'exhausted' | 'unknown';
+    lastErrorCode?: string;
+    retryAfterSec?: number;
+    checkedAt?: string;
+  };
+  videoProvider: {
+    name: string;
+    available: boolean;
+    model: string;
+    configured?: boolean;
+    description?: string;
+    quotaStatus?: 'available' | 'exhausted' | 'unknown';
+    lastErrorCode?: string;
+    retryAfterSec?: number;
+    checkedAt?: string;
+  };
   ttsProvider: { name: string; available: boolean; model: string };
   musicProvider: { name: string; available: boolean; model: string };
   audioProvider: { name: string; available: boolean; model: string };
+  localVideoProvider?: {
+    name: string;
+    available: boolean;
+    configured: boolean;
+    model: string;
+    url?: string;
+    gpu?: string;
+    vram?: string;
+    vramMb?: number;
+    vramSufficient?: boolean;
+    cudaAvailable?: boolean;
+    backendVersion?: string;
+    modelAvailable?: 'available' | 'not_found' | 'unknown';
+    modelVerified?: boolean;
+    outputFormat?: 'webp' | 'mp4' | 'auto';
+    capabilities?: {
+      textToVideo: boolean;
+      imageToVideo: boolean;
+      mp4: boolean;
+      webp: boolean;
+      audio: boolean;
+      resolutions: string[];
+      maxResolution: string;
+    };
+    error?: string;
+    description?: string;
+  };
+  localImageProvider?: {
+    name: string;
+    available: boolean;
+    configured: boolean;
+    model: string;
+    url?: string;
+    gpu?: string;
+    vram?: string;
+    vramMb?: number;
+    vramSufficient?: boolean;
+    cudaAvailable?: boolean;
+    backendVersion?: string;
+    modelAvailable?: 'available' | 'not_found' | 'unknown';
+    modelVerified?: boolean;
+    error?: string;
+    description?: string;
+  };
 }
 

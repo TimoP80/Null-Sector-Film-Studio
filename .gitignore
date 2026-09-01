@@ -1,7 +1,12 @@
 node_modules/
 build/
+!build/icon.png
+!build/icon.ico
+!build/icon-source.jpeg
 dist/
+release/
 coverage/
+data/assets/
 .DS_Store
 *.log
 .env*

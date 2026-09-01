@@ -96,11 +96,11 @@ export const AssetBrowserWorkspace: React.FC<AssetBrowserWorkspaceProps> = ({
           sceneId: shot.sceneId,
           actId: shot.actId,
           provider: 'Veo Video Generator (Veo 3.1)',
-          model: 'veo-3.1-lite-generate-preview',
+          model: 'veo-3.1-generate-preview',
           prompt: shot.videoPrompt || shot.prompt,
           url: shot.videoUrl,
           createdAt: '2026-08-12T10:00:00Z',
-          status: 'approved',
+          status: shot.status === 'approved' ? 'approved' : 'generated',
           versionTake: 1,
           durationSec: shot.durationSec,
           costUsd: 0.00

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { FilmProject, Shot, GenerationJob } from '../types/film';
 import { FilmStudioApiClient } from '../services/apiClient';
-import { generatePromptFaithfulVisual } from '../utils/cinematicVisualRenderer';
+import { ProviderErrorNotice } from './ProviderErrorNotice';
 import { 
   Sparkles, 
   Video, 
@@ -26,20 +26,64 @@ interface AIGenerationWorkspaceProps {
   project: FilmProject;
   onUpdateShot: (shot: Shot) => void;
   onQueueJob?: (job: GenerationJob) => void;
+  onOpenProviderSettings?: () => void;
 }
 
 export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
   project,
   onUpdateShot,
-  onQueueJob
+  onQueueJob,
+  onOpenProviderSettings
 }) => {
   const [selectedShotId, setSelectedShotId] = useState<string>(project.shots[0]?.id || '');
   const [activeMode, setActiveMode] = useState<'image' | 'video' | 'tts' | 'sfx' | 'music'>('image');
   const [imageModel, setImageModel] = useState<string>('gemini-3.1-flash-image');
+  const [imageProvider, setImageProvider] = useState<'gemini' | 'local'>('gemini');
+  const [videoProvider, setVideoProvider] = useState<'veo' | 'local'>('veo');
+  const [localVideoResolution, setLocalVideoResolution] = useState<'480p' | '720p' | '1080p'>('720p');
+  const [localVideoOutput, setLocalVideoOutput] = useState<'webp' | 'mp4'>('webp');
+  const [localVideoCaps, setLocalVideoCaps] = useState<{
+    available?: boolean;
+    gpu?: string;
+    vram?: string;
+    vramSufficient?: boolean;
+    modelAvailable?: string;
+    capabilities?: { mp4: boolean; webp: boolean; resolutions: string[]; textToVideo: boolean; imageToVideo: boolean };
+  } | null>(null);
+  const [localImageSettings, setLocalImageSettings] = useState<{
+    resolution: string;
+    steps: number;
+    cfg: number;
+    seed: string;
+    batchSize: number;
+    negativePrompt: string;
+    img2img: boolean;
+    denoise: number;
+  }>({
+    resolution: '16:9',
+    steps: 20,
+    cfg: 7,
+    seed: '',
+    batchSize: 1,
+    negativePrompt: 'blurry, distorted, watermark, text overlay, low quality, jpeg artifacts',
+    img2img: false,
+    denoise: 0.65,
+  });
+  const [localImageCaps, setLocalImageCaps] = useState<{
+    available?: boolean;
+    gpu?: string;
+    vram?: string;
+    vramSufficient?: boolean;
+    systemRamMb?: number;
+    modelAvailable?: string;
+    modelVerified?: boolean;
+    capabilities?: { textToImage: boolean; imageToImage: boolean; resolutions: string[] };
+  } | null>(null);
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingSuite, setIsGeneratingSuite] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<unknown | null>(null);
   const [promptSuite, setPromptSuite] = useState<{
     imagePrompt?: string;
     videoPrompt?: string;
@@ -55,6 +99,7 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
 
   // Sync prompt when shot changes
   React.useEffect(() => {
+    setGenerationError(null);
     if (selectedShot) {
       if (activeMode === 'image') {
         setCustomPrompt(selectedShot.prompt || `Cinematic film still of ${selectedShot.title}, 35mm anamorphic lens, master cinematography.`);
@@ -70,6 +115,58 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
       setGeneratedResult(selectedShot.videoUrl || selectedShot.storyboardImageUrl || null);
     }
   }, [selectedShotId, activeMode]);
+
+  // Fetch local video backend status/capabilities whenever the local provider is selected.
+  React.useEffect(() => {
+    if (videoProvider !== 'local') {
+      setLocalVideoCaps(null);
+      return;
+    }
+    let cancelled = false;
+    FilmStudioApiClient.getLocalVideoStatus()
+      .then((data: any) => {
+        if (cancelled) return;
+        setLocalVideoCaps({
+          available: Boolean(data?.status?.available),
+          gpu: data?.status?.gpu,
+          vram: data?.status?.vram,
+          vramSufficient: data?.status?.vramSufficient,
+          modelAvailable: data?.status?.modelAvailable,
+          capabilities: data?.capabilities,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setLocalVideoCaps(null);
+      });
+    return () => { cancelled = true; };
+  }, [videoProvider]);
+
+  // Fetch local image backend status/capabilities whenever the local image provider is selected.
+  React.useEffect(() => {
+    if (imageProvider !== 'local') {
+      setLocalImageCaps(null);
+      return;
+    }
+    let cancelled = false;
+    FilmStudioApiClient.getLocalImageStatus()
+      .then((data: any) => {
+        if (cancelled) return;
+        setLocalImageCaps({
+          available: Boolean(data?.status?.available),
+          gpu: data?.status?.gpu,
+          vram: data?.status?.vram,
+          vramSufficient: data?.status?.vramSufficient,
+          systemRamMb: data?.status?.systemRamMb,
+          modelAvailable: data?.status?.modelAvailable,
+          modelVerified: Boolean(data?.status?.modelVerified),
+          capabilities: data?.status?.capabilities,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setLocalImageCaps(null);
+      });
+    return () => { cancelled = true; };
+  }, [imageProvider]);
 
   const handleGeneratePromptSuite = async () => {
     if (!selectedShot) return;
@@ -117,12 +214,12 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
       shotId: selectedShot.id,
       sceneId: selectedShot.sceneId,
       prompt: customPrompt,
-      provider: activeMode === 'image' ? 'Gemini Imagen' : activeMode === 'video' ? 'Veo 3.1' : activeMode === 'tts' ? 'Gemini Flash Audio TTS' : 'Web Audio Synth',
-      model: activeMode === 'image' ? 'gemini-3.1-flash-lite-image' : activeMode === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-tts-preview',
+      provider: activeMode === 'image' ? (imageProvider === 'local' ? 'Local (ComfyUI / Flux)' : 'Gemini Imagen') : activeMode === 'video' ? (videoProvider === 'local' ? 'Local (ComfyUI)' : 'Veo 3.1') : activeMode === 'tts' ? 'Gemini Flash Audio TTS' : 'Web Audio Synth',
+      model: activeMode === 'image' ? (imageProvider === 'local' ? 'flux' : 'gemini-3.1-flash-lite-image') : activeMode === 'video' ? (videoProvider === 'local' ? 'ltx-video' : 'veo-3.1-generate-preview') : 'gemini-3.1-flash-tts-preview',
       status: 'queued',
       progress: 0,
       createdAt: new Date().toISOString(),
-      costEstimateUsd: activeMode === 'video' ? 0.05 : 0.00
+      costEstimateUsd: activeMode === 'video' && videoProvider !== 'local' ? 0.05 : 0.00
     };
 
     onQueueJob(newJob);
@@ -131,39 +228,55 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
   const handleGenerateImmediate = async () => {
     if (!selectedShot) return;
     setIsGenerating(true);
-    const scene = project.scenes.find(s => s.id === selectedShot.sceneId);
-
+    setGenerationError(null);
+    setGeneratedResult(null);
     try {
       if (activeMode === 'image') {
+        let localResult: import('../services/apiClient').LocalImageGenerationResult | null = null;
         let imageUrl: string;
-        try {
-          imageUrl = await FilmStudioApiClient.generateImage(customPrompt, '16:9', '1K', undefined, imageModel);
-        } catch (apiErr) {
-          console.warn('Backend image model error, synthesizing prompt-faithful frame:', apiErr);
-          imageUrl = generatePromptFaithfulVisual({
-            prompt: customPrompt,
-            title: selectedShot.title,
-            shotId: selectedShot.id,
-            sceneHeading: scene?.heading,
-            shotSize: selectedShot.camera.shotSize,
-            lens: selectedShot.camera.lens,
-            lighting: selectedShot.environment.lightingSetup || selectedShot.environment.keyLight,
-            colorTemp: String(selectedShot.environment.colorTempKelvin || selectedShot.environment.colorTemp || '5600K'),
-            aspectRatio: '16:9'
+        if (imageProvider === 'local') {
+          localResult = await FilmStudioApiClient.generateLocalImage(customPrompt, {
+            resolution: localImageSettings.resolution,
+            seed: localImageSettings.seed ? Number(localImageSettings.seed) : undefined,
+            negativePrompt: localImageSettings.negativePrompt,
+            steps: localImageSettings.steps,
+            cfg: localImageSettings.cfg,
+            batchSize: localImageSettings.batchSize,
+            referenceImageBase64: localImageSettings.img2img && selectedShot?.storyboardImageUrl
+              ? selectedShot.storyboardImageUrl
+              : undefined,
+            denoise: localImageSettings.img2img ? localImageSettings.denoise : undefined,
           });
+          imageUrl = localResult.imageUrl;
+          if (localResult.vramWarning) {
+            setGenerationError(new Error(localResult.vramWarning));
+          }
+        } else {
+          imageUrl = await FilmStudioApiClient.generateImage(
+            customPrompt,
+            '16:9',
+            '1K',
+            undefined,
+            imageModel
+          );
         }
-
         setGeneratedResult(imageUrl);
 
+        const localModel = imageProvider === 'local' ? (localResult?.ckptName || 'flux') : undefined;
+        const providerLabel = imageProvider === 'local' ? 'Local (ComfyUI)' : (imageModel === 'gemini-3.1-flash-lite-image' ? 'Nano Banana 2 Lite' : 'Nano Banana 2');
         const newTake = {
           id: `take_${Date.now()}`,
           takeNumber: (selectedShot.takes?.length || 0) + 1,
           type: 'image' as const,
           url: imageUrl,
           prompt: customPrompt,
+          provider: imageProvider === 'local' ? 'Local Image (ComfyUI)' : 'Gemini Imagen',
+          model: imageProvider === 'local' ? (localModel as string) : imageModel,
           parameters: { ...selectedShot.camera },
           rating: 5,
-          notes: `Rendered via ${imageModel === 'gemini-3.1-flash-lite-image' ? 'Nano Banana 2 Lite' : 'Nano Banana 2'} (${imageModel})`,
+          approved: false,
+          isMaster: false,
+          notes: `Rendered via ${providerLabel}${imageProvider === 'local' ? ` (${localModel || 'flux'})` : ` (${imageModel})`}${localResult?.seed !== undefined ? ` — seed ${localResult.seed}` : ''}`,
           createdAt: new Date().toISOString()
         };
 
@@ -174,26 +287,53 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
           takes: [newTake, ...(selectedShot.takes || [])]
         });
       } else if (activeMode === 'video') {
-        const vid = await FilmStudioApiClient.generateVideo(customPrompt, 4, selectedShot.id);
-        const videoSimUrl = vid.videoUrl;
-        setGeneratedResult(videoSimUrl);
+        const vid = videoProvider === 'local'
+          ? await FilmStudioApiClient.generateLocalVideo(
+              customPrompt, 4, selectedShot.id,
+              selectedShot.storyboardImageUrl,
+              project.aspectRatio.split(' ')[0],
+              localVideoResolution,
+              undefined,
+              localVideoOutput,
+            )
+          : await FilmStudioApiClient.generateVideo(
+              customPrompt, 4, selectedShot.id,
+              selectedShot.storyboardImageUrl
+            );
+        setGeneratedResult(vid.videoUrl);
 
+        const providerLabel = videoProvider === 'local' ? 'Local (ComfyUI)' : 'Veo 3.1';
+        const outputLabel = vid.outputFormat ? vid.outputFormat.toUpperCase() : 'VIDEO';
         const newTake = {
           id: `take_v_${Date.now()}`,
           takeNumber: (selectedShot.takes?.length || 0) + 1,
           type: 'video' as const,
-          url: videoSimUrl,
+          url: vid.videoUrl,
           prompt: customPrompt,
+          provider: vid.provider,
+          model: vid.model,
           parameters: { ...selectedShot.camera, motion: selectedShot.camera.movement },
+          sourceImage: selectedShot.storyboardImageUrl,
+          providerJobId: vid.operationId,
+          generationParameters: {
+            durationSec: 4,
+            resolution: videoProvider === 'local' ? localVideoResolution : project.resolution,
+            aspectRatio: project.aspectRatio,
+            cameraMovement: selectedShot.camera.movement,
+            cameraSpeed: selectedShot.camera.movementSpeed,
+          },
           rating: 5,
-          notes: 'Veo 3.1 Motion Render',
+          approved: false,
+          isMaster: false,
+          notes: `${providerLabel} Motion Render • ${outputLabel} • Operation: ${vid.operationId || 'completed'}`,
+          durationSec: vid.durationSec,
           createdAt: new Date().toISOString()
         };
 
         onUpdateShot({
           ...selectedShot,
-          videoUrl: videoSimUrl,
-          status: 'approved',
+          videoUrl: vid.videoUrl,
+          status: 'review',
           takes: [newTake, ...(selectedShot.takes || [])]
         });
       } else if (activeMode === 'music') {
@@ -216,25 +356,8 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
       }
     } catch (e: any) {
       console.error('Generation error:', e);
-      if (activeMode === 'image') {
-        const fallbackUrl = generatePromptFaithfulVisual({
-          prompt: customPrompt,
-          title: selectedShot.title,
-          shotId: selectedShot.id,
-          sceneHeading: scene?.heading,
-          shotSize: selectedShot.camera.shotSize,
-          lens: selectedShot.camera.lens,
-          lighting: selectedShot.environment.lightingSetup || selectedShot.environment.keyLight,
-          colorTemp: String(selectedShot.environment.colorTempKelvin || selectedShot.environment.colorTemp || '5600K'),
-          aspectRatio: '16:9'
-        });
-        setGeneratedResult(fallbackUrl);
-        onUpdateShot({
-          ...selectedShot,
-          storyboardImageUrl: fallbackUrl,
-          status: 'review'
-        });
-      }
+      setGeneratedResult(null);
+      setGenerationError(e);
     } finally {
       setIsGenerating(false);
     }
@@ -356,9 +479,9 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
                   activeMode === 'video' ? (
                     <video src={generatedResult} autoPlay loop muted playsInline className="w-full h-full object-cover" />
                   ) : (
-                    <img 
-                      src={generatedResult} 
-                      alt="Generated take" 
+                    <img
+                      src={generatedResult}
+                      alt="Generated take"
                       className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"
                     />
@@ -380,9 +503,19 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
                     {project.aspectRatio.split(' ')[0]} • 24 FPS
                   </span>
                 </div>
-              </div>
+              </div>              {generationError && !isGenerating && (
+                <div className="p-4 border-b border-slate-800">
+                  <ProviderErrorNotice
+                    error={generationError}
+                    provider={activeMode === 'video' ? (videoProvider === 'local' ? 'Local video generation (ComfyUI)' : 'Veo video generation') : (imageProvider === 'local' ? 'Local image generation (ComfyUI)' : 'Gemini image generation')}
+                    model={activeMode === 'video' ? (videoProvider === 'local' ? 'ltx-video' : 'veo-3.1-generate-preview') : (imageProvider === 'local' ? 'flux' : imageModel)}
+                    onOpenSettings={onOpenProviderSettings}
+                  />
+                </div>
+              )}
 
               {/* Master References Bar */}
+ */
               <div className="px-5 py-2.5 bg-slate-950 border-t border-b border-slate-800 flex items-center gap-4 text-xs">
                 <span className="text-slate-500 font-bold uppercase text-[10px] flex items-center gap-1">
                   <Lock className="w-3 h-3 text-amber-400" /> Master Locks:
@@ -413,7 +546,7 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
                       <span>{activeMode.toUpperCase()} Prompt Specification</span>
                     </label>
                     <span className="text-[10px] text-slate-500">
-                      Target: {activeMode === 'image' ? (imageModel === 'gemini-3.1-flash-lite-image' ? 'Nano Banana 2 Lite (Free on Google Flow)' : 'Nano Banana 2 (Gemini 3.1 Flash Image)') : activeMode === 'video' ? 'Veo 3.1 Generator' : activeMode === 'tts' ? 'Flash Audio Voice' : 'Cinematic Audio Engine'}
+                      Target: {activeMode === 'image' ? (imageProvider === 'local' ? 'Local ComfyUI / Flux (Free)' : (imageModel === 'gemini-3.1-flash-lite-image' ? 'Nano Banana 2 Lite (Free on Google Flow)' : 'Nano Banana 2 (Gemini 3.1 Flash Image)')) : activeMode === 'video' ? (videoProvider === 'local' ? 'Local ComfyUI / LTX-Video (Free)' : 'Veo 3.1 Generator (Cloud)') : activeMode === 'tts' ? 'Flash Audio Voice' : 'Cinematic Audio Engine'}
                     </span>
                   </div>
 
@@ -424,41 +557,254 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
                       </span>
                       <button
                         type="button"
-                        onClick={() => setImageModel('gemini-3.1-flash-image')}
+                        onClick={() => setImageProvider('gemini')}
                         className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
-                          imageModel === 'gemini-3.1-flash-image'
+                          imageProvider === 'gemini'
                             ? 'bg-amber-500 text-slate-950 shadow-sm'
                             : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
                         }`}
                       >
-                        <span>Nano Banana 2</span>
-                        <span className="text-[9px] opacity-75 font-normal">(Gemini 3.1 Flash Image)</span>
+                        <span>Gemini</span>
+                        <span className="text-[9px] opacity-75 font-normal">(Cloud)</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() => setImageModel('gemini-3.1-flash-lite-image')}
+                        onClick={() => setImageProvider('local')}
                         className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
-                          imageModel === 'gemini-3.1-flash-lite-image'
-                            ? 'bg-amber-500 text-slate-950 shadow-sm'
+                          imageProvider === 'local'
+                            ? 'bg-emerald-500 text-slate-950 shadow-sm'
                             : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
                         }`}
                       >
-                        <span>Nano Banana 2 Lite</span>
-                        <span className="text-[9px] text-emerald-400 font-normal">● Free Google Flow Tier</span>
+                        <Cpu className="w-3 h-3" />
+                        <span>Local (ComfyUI)</span>
+                        <span className="text-[9px] text-emerald-400 font-normal">● Free</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setImageModel('gemini-3-pro-image')}
-                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
-                          imageModel === 'gemini-3-pro-image'
-                            ? 'bg-amber-500 text-slate-950 shadow-sm'
-                            : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
-                        }`}
-                      >
-                        <span>Nano Banana Pro</span>
-                        <span className="text-[9px] opacity-75 font-normal">(Gemini 3 Pro)</span>
-                      </button>
+                      {imageProvider === 'gemini' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setImageModel('gemini-3.1-flash-image')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+                              imageModel === 'gemini-3.1-flash-image'
+                                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                                : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                            }`}
+                          >
+                            <span>Nano Banana 2</span>
+                            <span className="text-[9px] opacity-75 font-normal">(Gemini 3.1 Flash Image)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setImageModel('gemini-3.1-flash-lite-image')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+                              imageModel === 'gemini-3.1-flash-lite-image'
+                                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                                : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                            }`}
+                          >
+                            <span>Nano Banana 2 Lite</span>
+                            <span className="text-[9px] text-emerald-400 font-normal">● Free Google Flow Tier</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setImageModel('gemini-3-pro-image')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+                              imageModel === 'gemini-3-pro-image'
+                                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                                : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                            }`}
+                          >
+                            <span>Nano Banana Pro</span>
+                            <span className="text-[9px] opacity-75 font-normal">(Gemini 3 Pro)</span>
+                          </button>
+                        </>
+                      )}
+                      {imageProvider === 'local' && (
+                        <>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            Resolution
+                            <select
+                              value={localImageSettings.resolution}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, resolution: e.target.value }))}
+                              className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[11px] text-slate-200"
+                            >
+                              {(localImageCaps?.capabilities?.resolutions || ['16:9', '4:3', '3:2', '1:1', '9:16', '2:3', '512x512', '768x768', '1024x1024']).map(r => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            Steps
+                            <input
+                              type="number"
+                              min={1}
+                              max={150}
+                              value={localImageSettings.steps}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, steps: Number(e.target.value) }))}
+                              className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 w-14 text-[11px] text-slate-200"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            CFG
+                            <input
+                              type="number"
+                              min={0.5}
+                              max={30}
+                              step={0.5}
+                              value={localImageSettings.cfg}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, cfg: Number(e.target.value) }))}
+                              className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 w-14 text-[11px] text-slate-200"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            Seed
+                            <input
+                              type="text"
+                              placeholder="random"
+                              value={localImageSettings.seed}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, seed: e.target.value }))}
+                              className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 w-20 text-[11px] text-slate-200"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            Batch
+                            <input
+                              type="number"
+                              min={1}
+                              max={4}
+                              value={localImageSettings.batchSize}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, batchSize: Math.min(4, Math.max(1, Number(e.target.value))) }))}
+                              className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 w-12 text-[11px] text-slate-200"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                            <input
+                              type="checkbox"
+                              checked={localImageSettings.img2img}
+                              onChange={(e) => setLocalImageSettings(s => ({ ...s, img2img: e.target.checked }))}
+                              className="accent-emerald-500"
+                            />
+                            Image-to-Image
+                          </label>
+                          {localImageSettings.img2img && (
+                            <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                              Denoise
+                              <input
+                                type="number"
+                                min={0.05}
+                                max={1}
+                                step={0.05}
+                                value={localImageSettings.denoise}
+                                onChange={(e) => setLocalImageSettings(s => ({ ...s, denoise: Number(e.target.value) }))}
+                                className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 w-14 text-[11px] text-slate-200"
+                              />
+                            </label>
+                          )}
+                        </>
+                      )}
                     </div>
+                  )}
+
+                  {imageProvider === 'local' && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-slate-400 mb-2 px-1">
+                      <span className={localImageCaps?.available ? 'text-emerald-400' : 'text-red-400'}>
+                        {localImageCaps?.available ? '● Backend Online' : '✕ Backend Offline'}
+                      </span>
+                      {localImageCaps?.gpu && <span>GPU: {localImageCaps.gpu}</span>}
+                      {localImageCaps?.vram && <span>VRAM: {localImageCaps.vram}</span>}
+                      {localImageCaps?.systemRamMb !== undefined && <span>RAM: {Math.round(localImageCaps.systemRamMb / 1024)} GB</span>}
+                      {localImageCaps?.vramSufficient === false && (
+                        <span className="text-amber-400">⚠ VRAM may be insufficient</span>
+                      )}
+                      <span className={localImageCaps?.modelAvailable === 'available' ? 'text-emerald-400' : localImageCaps?.modelAvailable === 'not_found' ? 'text-red-400' : 'text-amber-400'}>
+                        {localImageCaps?.modelAvailable === 'available' ? '● Model Available' : localImageCaps?.modelAvailable === 'not_found' ? '✕ Model Not Installed' : '? Model Unverified'}
+                      </span>
+                      {localImageCaps?.capabilities?.imageToImage === false && localImageSettings.img2img && (
+                        <span className="text-amber-400">⚠ Image-to-Image unavailable</span>
+                      )}
+                    </div>
+                  )}
+
+                  {activeMode === 'video' && (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 p-2 bg-slate-900 border border-slate-800 rounded text-xs mb-2">
+                        <span className="text-purple-400 font-bold uppercase text-[10px] flex items-center gap-1">
+                          <Video className="w-3 h-3" /> Video Engine:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setVideoProvider('veo')}
+                          className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+                            videoProvider === 'veo'
+                              ? 'bg-purple-500 text-white shadow-sm'
+                              : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                          }`}
+                        >
+                          <span>Gemini / Veo 3.1</span>
+                          <span className="text-[9px] opacity-75 font-normal">(Cloud)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setVideoProvider('local')}
+                          className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all flex items-center gap-1 ${
+                            videoProvider === 'local'
+                              ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                              : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                          }`}
+                        >
+                          <Cpu className="w-3 h-3" />
+                          <span>Local (ComfyUI)</span>
+                          <span className="text-[9px] text-emerald-400 font-normal">● Free</span>
+                        </button>
+
+                        {videoProvider === 'local' && (
+                          <>
+                            <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                              Resolution
+                              <select
+                                value={localVideoResolution}
+                                onChange={(e) => setLocalVideoResolution(e.target.value as '480p' | '720p' | '1080p')}
+                                className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[11px] text-slate-200"
+                              >
+                                {(localVideoCaps?.capabilities?.resolutions || ['480p', '720p', '1080p']).map(r => (
+                                  <option key={r} value={r}>{r}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="flex items-center gap-1 text-[10px] text-slate-400">
+                              Output
+                              <select
+                                value={localVideoOutput}
+                                onChange={(e) => setLocalVideoOutput(e.target.value as 'webp' | 'mp4')}
+                                className="bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[11px] text-slate-200"
+                              >
+                                <option value="webp">WEBP</option>
+                                <option value="mp4" disabled={!localVideoCaps?.capabilities?.mp4}>
+                                  MP4{!localVideoCaps?.capabilities?.mp4 ? ' (MP4 node not installed)' : ''}
+                                </option>
+                              </select>
+                            </label>
+                          </>
+                        )}
+                      </div>
+
+                      {videoProvider === 'local' && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-slate-400 mb-2 px-1">
+                          <span className={localVideoCaps?.available ? 'text-emerald-400' : 'text-red-400'}>
+                            {localVideoCaps?.available ? '● Backend Online' : '✕ Backend Offline'}
+                          </span>
+                          {localVideoCaps?.gpu && <span>GPU: {localVideoCaps.gpu}</span>}
+                          {localVideoCaps?.vram && <span>VRAM: {localVideoCaps.vram}</span>}
+                          {localVideoCaps?.vramSufficient === false && (
+                            <span className="text-amber-400">⚠ VRAM may be insufficient</span>
+                          )}
+                          <span className={localVideoCaps?.modelAvailable === 'available' ? 'text-emerald-400' : localVideoCaps?.modelAvailable === 'not_found' ? 'text-red-400' : 'text-amber-400'}>
+                            {localVideoCaps?.modelAvailable === 'available' ? '● Model Available' : localVideoCaps?.modelAvailable === 'not_found' ? '✕ Model Not Found' : '? Model Unverified'}
+                          </span>
+                        </div>
+                      )}
+                    </>
                   )}
 
                   <textarea
@@ -498,7 +844,7 @@ export const AIGenerationWorkspace: React.FC<AIGenerationWorkspaceProps> = ({
                       }`}
                     >
                       <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-                      <span>{isGenerating ? 'Rendering Neural Take...' : `Render Immediate ${activeMode.toUpperCase()}`}</span>
+                      <span>{isGenerating ? (activeMode === 'video' ? (videoProvider === 'local' ? 'Processing Local Video...' : 'Processing Veo Video...') : (imageProvider === 'local' ? 'Rendering Local Image...' : 'Rendering Neural Take...')) : `Render Immediate ${activeMode.toUpperCase()}`}</span>
                     </button>
                   </div>
                 </div>

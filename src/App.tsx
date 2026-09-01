@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { theLastSignalProject } from './data/theLastSignalDemo';
-import { FilmProject, Shot, Character, Location, Scene, DialogueSegment, TimelineTrack, ContinuityItem, ProviderStatus } from './types/film';
+import { FilmProject, Shot, ShotTake, Character, Location, Scene, DialogueSegment, TimelineTrack, ContinuityItem, ProviderStatus } from './types/film';
 import { FilmStudioApiClient } from './services/apiClient';
 import { ShotListNavigationOptions } from './utils/shotReadiness';
 
@@ -28,6 +28,7 @@ import { SettingsWorkspace } from './components/SettingsWorkspace';
 import { AIAssistantDrawer } from './components/AIAssistantDrawer';
 import { LiveVoiceDirectorModal } from './components/LiveVoiceDirectorModal';
 import { ImageStudioModal } from './components/ImageStudioModal';
+import { bindVideoJobsToProject, videoJobRuntime } from './videoJobRuntime';
 
 export function App() {
   const [project, setProject] = useState<FilmProject>(theLastSignalProject);
@@ -41,12 +42,29 @@ export function App() {
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [shotListNavigation, setShotListNavigation] = useState<ShotListNavigationOptions>({});
 
+  useEffect(() => {
+    const unbind = bindVideoJobsToProject(project, setProject);
+    return () => unbind();
+  }, [project.id]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => videoJobRuntime.shutdown();
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
   // Fetch provider status on mount
   useEffect(() => {
     FilmStudioApiClient.getProviderStatus().then((status) => {
       setProviderStatus(status);
     });
   }, []);
+
+  const openProviderSettings = () => {
+    FilmStudioApiClient.getProviderStatus().then(setProviderStatus);
+    setIsImageStudioOpen(false);
+    setCurrentTab('SETTINGS');
+  };
 
   // Validation issues count
   const validationCount = 
@@ -55,6 +73,11 @@ export function App() {
     project.continuityItems.filter(c => c.status !== 'resolved').length;
 
   // Handlers
+  const handleOpenShot = (shotId: string, _takeId?: string) => {
+    const shot = project.shots.find(item => item.id === shotId);
+    if (shot) setSelectedDesignerShot(shot);
+  };
+
   const handleOpenShotList = (options: ShotListNavigationOptions = {}) => {
     setShotListNavigation(options);
     setCurrentTab('SHOT_LIST');
@@ -246,6 +269,10 @@ export function App() {
   };
 
   const handleNewProject = () => {
+    if (typeof window !== 'undefined' && !window.confirm('Clear the current film project and start a new one? This cannot be undone.')) {
+      return;
+    }
+
     const emptyProj: FilmProject = {
       id: `proj_${Date.now()}`,
       title: 'UNTITLED CINEMATIC PROJECT',
@@ -349,7 +376,37 @@ export function App() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    setProject(emptyProj);
+    const newProject: FilmProject = {
+      ...emptyProj,
+      title: 'UNTITLED PROJECT',
+      logline: 'Write a premise or import a screenplay to begin.',
+      screenplayText: '',
+      acts: [],
+      scenes: [],
+      characters: [],
+      locations: [],
+      shots: [],
+      dialogueSegments: [],
+      sfxCues: [],
+      musicCues: [],
+      assets: [],
+      generationJobs: [],
+      continuityItems: [],
+      productionNotes: [],
+      studioBranding: {
+        ...emptyProj.studioBranding,
+        titleCard: 'UNTITLED PROJECT',
+      },
+    };
+
+    setProject(newProject);
+    setSelectedDesignerShot(null);
+    setImageStudioTargetShot(undefined);
+    setIsImageStudioOpen(false);
+    setIsAIEditorOpen(false);
+    setIsAssistantOpen(false);
+    setIsLiveVoiceOpen(false);
+    setShotListNavigation({});
     setCurrentTab('SCREENPLAY');
   };
 
@@ -392,11 +449,13 @@ export function App() {
               onNavigate={setCurrentTab}
               onBatchGenerate={handleBatchGenerate}
               onOpenShotList={handleOpenShotList}
+              onOpenShot={handleOpenShot}
             />
           )}
 
           {currentTab === 'SCREENPLAY' && (
             <ScreenplayWorkspace
+              key={project.id}
               project={project}
               onUpdateScreenplay={handleUpdateScreenplay}
               onNavigateToScene={(scId) => {
@@ -466,6 +525,7 @@ export function App() {
             <AIGenerationWorkspace
               project={project}
               onUpdateShot={handleUpdateShot}
+              onOpenProviderSettings={openProviderSettings}
             />
           )}
 
@@ -609,13 +669,27 @@ export function App() {
           setImageStudioTargetShot(undefined);
         }}
         targetShot={imageStudioTargetShot}
-        onSaveImageToShot={(shotId, imageUrl) => {
+        onOpenProviderSettings={openProviderSettings}
+        onSaveImageToShot={(shotId, imageUrl, metadata) => {
           const target = project.shots.find(s => s.id === shotId);
           if (target) {
+            const take: ShotTake = {
+              id: `take_image_studio_${Date.now()}`,
+              takeNumber: (target.takes?.length || 0) + 1,
+              type: 'image',
+              url: imageUrl,
+              prompt: metadata.prompt,
+              provider: 'Google Gemini',
+              model: metadata.model,
+              createdAt: new Date().toISOString(),
+              approved: false,
+              notes: `Image Studio ${metadata.operation} render`,
+            };
             handleUpdateShot({
               ...target,
               storyboardImageUrl: imageUrl,
               status: 'review',
+              takes: [take, ...(target.takes || [])],
             });
           }
         }}

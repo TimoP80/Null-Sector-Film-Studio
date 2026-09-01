@@ -9,6 +9,7 @@ import {
   Layers, 
   Film,
   Play,
+  Plus,
   RotateCcw,
   CheckCircle2
 } from 'lucide-react';
@@ -178,6 +179,16 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
         </button>
 
         <div className="h-4 w-px bg-[#2A2A2D]" />
+
+        {/* New Project */}
+        <button
+          onClick={onNewProject}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] font-mono font-bold text-[#CBA135] hover:text-[#E0E0E0] bg-[#151619] hover:bg-[#1E1F24] border border-[#CBA135]/40 hover:border-[#CBA135] transition-colors"
+          title="Clear the current film project and start a new one"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline uppercase tracking-wider">New Project</span>
+        </button>
 
         {/* Demo Reload & Reset */}
         <button

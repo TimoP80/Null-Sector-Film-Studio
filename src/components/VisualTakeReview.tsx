@@ -175,6 +175,16 @@ export const VisualTakeReview: React.FC<VisualTakeReviewProps> = ({
                   {take.costUsd !== undefined && <span>Cost: <strong className="text-[#D0D0D0]">${take.costUsd.toFixed(2)}</strong></span>}
                 </div>
                 {take.notes && <div className="text-[9px] text-[#666] line-clamp-2">{take.notes}</div>}
+                {(take.sourceImage || take.providerJobId || take.generationParameters) && (
+                  <details className="text-[9px] text-[#8E9299]">
+                    <summary className="cursor-pointer uppercase text-cyan-300">Generation Info</summary>
+                    <div className="mt-1 grid grid-cols-2 gap-1 border-t border-[#222225] pt-1">
+                      {take.sourceImage && <span>Source image: linked</span>}
+                      {take.providerJobId && <span>Job: {take.providerJobId}</span>}
+                      {take.generationParameters && <span className="col-span-2">Parameters: {Object.entries(take.generationParameters).map(([key, value]) => `${key}=${String(value)}`).join(' • ')}</span>}
+                    </div>
+                  </details>
+                )}
 
                 <div className="flex items-center gap-1 pt-1 border-t border-[#222225]">
                   <button

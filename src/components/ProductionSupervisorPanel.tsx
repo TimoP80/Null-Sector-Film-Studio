@@ -8,6 +8,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { FilmProject } from '../types/film';
+import { videoJobRuntime } from '../videoJobRuntime';
 import {
   calculateProductionSupervisorSummary,
   SceneRecommendation,
@@ -18,12 +19,14 @@ interface ProductionSupervisorPanelProps {
   project: FilmProject;
   onNavigate: (tab: string) => void;
   onOpenShotList: (options?: ShotListNavigationOptions) => void;
+  onOpenShot?: (shotId: string, takeId?: string) => void;
 }
 
 export const ProductionSupervisorPanel: React.FC<ProductionSupervisorPanelProps> = ({
   project,
   onNavigate,
   onOpenShotList,
+  onOpenShot,
 }) => {
   const summary = calculateProductionSupervisorSummary(project);
   const handleRecommendationAction = (recommendation: SceneRecommendation) => {
@@ -37,6 +40,13 @@ export const ProductionSupervisorPanel: React.FC<ProductionSupervisorPanelProps>
     onNavigate(recommendation.targetTab);
   };
   const issueCount = summary.continuityIssues + summary.shotsMissingDialogue + summary.shotsWithoutMaster + summary.locationsMissingReferences;
+  const videoJobs = (project.generationJobs || []).filter(job => job.targetType === 'video');
+  const videoCounts = {
+    queued: videoJobs.filter(job => job.status === 'queued').length,
+    generating: videoJobs.filter(job => job.status === 'generating').length,
+    completed: videoJobs.filter(job => job.status === 'completed').length,
+    failed: videoJobs.filter(job => job.status === 'failed').length,
+  };
 
   return (
     <div className="panel p-4 bg-[#151619] border border-[#2A2A2D] rounded-md font-mono">
@@ -104,6 +114,31 @@ export const ProductionSupervisorPanel: React.FC<ProductionSupervisorPanelProps>
           <div className="text-sm font-bold text-cyan-300">{summary.filmHealth.activeHighPriorityRecommendations}</div>
           <div className="text-[8px] uppercase text-[#666]">High Priority</div>
         </div>
+      </div>
+
+      <div className="mt-3 p-3 bg-[#0E0E10] border border-[#222225] rounded-sm">
+        <div className="flex items-center justify-between text-[9px] uppercase tracking-wider text-[#CBA135]">
+          <span>Video Generation Queue</span>
+          <span className="text-[#666]">{videoJobs.length} total</span>
+        </div>
+        <div className="mt-2 grid grid-cols-4 gap-2 text-center text-[8px] uppercase">
+          <div><div className="text-cyan-300 text-sm font-bold">{videoCounts.queued}</div><div className="text-[#666]">Queued</div></div>
+          <div><div className="text-purple-300 text-sm font-bold">{videoCounts.generating}</div><div className="text-[#666]">Generating</div></div>
+          <div><div className="text-emerald-300 text-sm font-bold">{videoCounts.completed}</div><div className="text-[#666]">Completed</div></div>
+          <div><div className="text-red-300 text-sm font-bold">{videoCounts.failed}</div><div className="text-[#666]">Failed</div></div>
+        </div>
+        {videoJobs.slice(-3).reverse().map(job => (
+          <div key={job.id} className="mt-2 flex items-center justify-between gap-2 border-t border-[#222225] pt-2 text-[9px]">
+            <button onClick={() => job.shotId && onOpenShot?.(job.shotId, job.targetId)} className="truncate text-left text-[#AAA] hover:text-cyan-300">{job.shotId || job.title}</button>
+            <div className="flex items-center gap-2">
+              <span className={job.status === 'failed' ? 'text-red-300' : job.status === 'completed' ? 'text-emerald-300' : 'text-cyan-300'}>{job.status.toUpperCase()}</span>
+              {job.status === 'failed' || job.status === 'cancelled' ? <button onClick={() => videoJobRuntime.retry(job.id)} className="text-amber-300 uppercase">Retry</button> : null}
+              {job.status === 'queued' || job.status === 'generating' ? <button onClick={() => void videoJobRuntime.cancel(job.id)} className="text-red-300 uppercase">Cancel</button> : null}
+              {job.status === 'completed' ? <button onClick={() => job.shotId && onOpenShot?.(job.shotId, job.targetId)} className="text-cyan-300 uppercase">View Take</button> : null}
+            </div>
+          </div>
+        ))}
+        {videoJobs.length > 0 && <div className="mt-2 text-[8px] text-[#666] uppercase">Progress is reported only when provided by the provider.</div>}
       </div>
 
       <div className="mt-3 h-1.5 rounded-full bg-[#0A0A0B] border border-[#222225] overflow-hidden">

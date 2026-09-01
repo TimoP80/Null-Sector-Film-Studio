@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { FilmStudioApiClient } from '../services/apiClient';
 import { generatePromptFaithfulVisual } from '../utils/cinematicVisualRenderer';
+import { videoJobRuntime } from '../videoJobRuntime';
 
 interface GenerationQueueManagerProps {
   project: FilmProject;
@@ -50,7 +51,7 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
   useEffect(() => {
     if (isQueuePaused) return;
 
-    const nextQueuedJob = jobs.find(j => j.status === 'queued');
+    const nextQueuedJob = jobs.find(j => j.status === 'queued' && j.targetType !== 'video');
     if (!nextQueuedJob || activeJobId) return;
 
     const runJob = async () => {
@@ -66,24 +67,24 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
         let resultUrl = '';
 
         if (nextQueuedJob.targetType === 'image') {
-          const targetShot = project.shots.find(s => s.id === nextQueuedJob.shotId);
-          try {
-            resultUrl = await FilmStudioApiClient.generateImage(nextQueuedJob.prompt);
-          } catch (imgErr) {
-            console.warn('Job image generation fallback to procedural synthesizer:', imgErr);
-            resultUrl = generatePromptFaithfulVisual({
-              prompt: nextQueuedJob.prompt,
-              title: targetShot?.title || 'GENERATED TAKE',
-              shotId: targetShot?.id,
-              shotSize: targetShot?.camera.shotSize,
-              lens: targetShot?.camera.lens,
-              lighting: targetShot?.environment.lightingSetup,
-              colorTemp: String(targetShot?.environment.colorTempKelvin || '5600K'),
-              aspectRatio: '16:9',
-            });
-          }
+          const isLocalImage = nextQueuedJob.provider.includes('Local') || nextQueuedJob.model === 'flux';
+          resultUrl = isLocalImage
+            ? (await FilmStudioApiClient.generateLocalImage(nextQueuedJob.prompt)).imageUrl
+            : await FilmStudioApiClient.generateImage(nextQueuedJob.prompt);
         } else if (nextQueuedJob.targetType === 'video') {
-          const vid = await FilmStudioApiClient.generateVideo(nextQueuedJob.prompt, 4, nextQueuedJob.shotId);
+          const targetShot = project.shots.find(s => s.id === nextQueuedJob.shotId);
+          const isLocal = nextQueuedJob.provider.includes('Local') || nextQueuedJob.model === 'ltx-video';
+          const vid = isLocal
+            ? await FilmStudioApiClient.generateLocalVideo(
+                nextQueuedJob.prompt, 4, nextQueuedJob.shotId,
+                targetShot?.storyboardImageUrl,
+                project.aspectRatio.split(' ')[0],
+                project.resolution
+              )
+            : await FilmStudioApiClient.generateVideo(
+                nextQueuedJob.prompt, 4, nextQueuedJob.shotId,
+                targetShot?.storyboardImageUrl
+              );
           resultUrl = vid.videoUrl;
         } else if (nextQueuedJob.targetType === 'tts') {
           const tts = await FilmStudioApiClient.generateTTS(nextQueuedJob.prompt, 'Kore', 'restrained');
@@ -129,8 +130,12 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
                       type: 'image' as const,
                       url: resultUrl,
                       prompt: nextQueuedJob.prompt,
+                      provider: nextQueuedJob.provider,
+                      model: nextQueuedJob.model,
+                      generationParameters: { queuedJobId: nextQueuedJob.id },
                       createdAt: new Date().toISOString(),
-                      approved: false
+                      approved: false,
+                      isMaster: false
                     }
                   ]
                 };
@@ -138,6 +143,7 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
                 return {
                   ...s,
                   videoUrl: resultUrl,
+                  status: 'review' as const,
                   takes: [
                     ...s.takes,
                     {
@@ -146,8 +152,14 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
                       type: 'video' as const,
                       url: resultUrl,
                       prompt: nextQueuedJob.prompt,
+                      provider: nextQueuedJob.provider || 'Veo Video Generator (Veo 3.1)',
+                      model: nextQueuedJob.model,
+                      sourceImage: s.storyboardImageUrl,
+                      providerJobId: nextQueuedJob.id,
+                      generationParameters: { queuedJobId: nextQueuedJob.id, resolution: project.resolution, aspectRatio: project.aspectRatio },
                       createdAt: new Date().toISOString(),
-                      approved: false
+                      approved: false,
+                      isMaster: false
                     }
                   ]
                 };
@@ -184,16 +196,15 @@ export const GenerationQueueManager: React.FC<GenerationQueueManagerProps> = ({
   }, [jobs, isQueuePaused, activeJobId, onUpdateProject, project]);
 
   const handleRetryJob = (jobId: string) => {
-    const updated = jobs.map(j =>
-      j.id === jobId ? { ...j, status: 'queued' as const, progress: 0, error: undefined } : j
-    );
+    const videoJob = videoJobRuntime.getJobs(project.id).find(job => job.id === jobId);
+    if (videoJob) { videoJobRuntime.retry(jobId); return; }
+    const updated = jobs.map(j => j.id === jobId ? { ...j, status: 'queued' as const, progress: 0, error: undefined } : j);
     onUpdateProject({ ...project, generationJobs: updated });
   };
 
   const handleCancelJob = (jobId: string) => {
-    const updated = jobs.map(j =>
-      j.id === jobId ? { ...j, status: 'cancelled' as const, progress: 0 } : j
-    );
+    if (videoJobRuntime.getJobs(project.id).some(job => job.id === jobId)) { void videoJobRuntime.cancel(jobId); return; }
+    const updated = jobs.map(j => j.id === jobId ? { ...j, status: 'cancelled' as const, progress: 0 } : j);
     onUpdateProject({ ...project, generationJobs: updated });
   };
 
