@@ -15,15 +15,16 @@ import secrets
 import subprocess
 import threading
 import time
-from pathlib import Path
+import urllib.request
 from typing import Any
 
 import modal
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pathlib import Path
 
-from worker import run_ltx_job
+SERVICE_SOURCE_REVISION = "diagnostic-current-source-v1"
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 6 * 1024 * 1024
@@ -36,12 +37,17 @@ MAX_QUEUE = 8
 MAX_CONCURRENT = 1
 DEFAULT_TIMEOUT = 900
 
-app = modal.App("nullsector-ltx-http")
+import os as _os
+app = modal.App(_os.environ.get("MODAL_APP_NAME", "nullsector-ltx-http"))
 state_volume = modal.Volume.from_name("nullsector-ltx-service-state", create_if_missing=True)
 models_volume = modal.Volume.from_name("nullsector-ltx-service-models", create_if_missing=True)
 service_secret = modal.Secret.from_name("nullsector-ltx-http", required_keys=["MODAL_LTX_TOKEN"])
 
 web = FastAPI(title="Null Sector LTX", docs_url=None, redoc_url=None)
+
+@web.get("/diagnostic")
+async def diagnostic():
+    return {"service": "nullsector-ltx-http", "sourceRevision": SERVICE_SOURCE_REVISION, "status": "ok"}
 _lock = threading.Lock()
 _active = 0
 
@@ -93,6 +99,7 @@ def _state_path(job_id: str) -> Path:
 
 
 def _read_state(job_id: str) -> dict[str, Any] | None:
+    state_volume.reload()
     path = _state_path(job_id)
     if not path.exists():
         return None
@@ -108,11 +115,12 @@ def _write_state(state: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, separators=(",", ":")))
     tmp.replace(path)
-    state_volume.commit()
+    # The ASGI function does not mount the state volume. The GPU worker commits
+    # its attached volume after updating state.
 
 
 def _request_hash(payload: JobRequest) -> str:
-    return hashlib.sha256(payload.model_dump_json(sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload.model_dump(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _decode_source(source: str, job_id: str) -> str:
@@ -179,10 +187,10 @@ def _validate_mp4(path: Path) -> dict[str, Any]:
 worker_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg", "git", "ca-certificates")
-    .pip_install("torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0", "huggingface_hub", "pillow", "comfy-kitchen==0.2.8", extra_index_url="https://download.pytorch.org/whl/cu126")
+    .pip_install("fastapi", "pydantic", "torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0", "huggingface_hub", "pillow", "comfy-kitchen==0.2.8", extra_index_url="https://download.pytorch.org/whl/cu126")
     .run_commands(f"git clone --depth 1 --branch v0.20.1 https://github.com/comfyanonymous/ComfyUI.git /comfyui", "pip install -r /comfyui/requirements.txt")
     .run_commands("printf 'comfyui:\\n    base_path: /models\\n    checkpoints: checkpoints/\\n    text_encoders: text_encoders/\\n    vae: vae/\\n' > /comfyui/extra_model_paths.yaml")
-    .add_local_python_source("worker", copy=True)
+    .add_local_file("worker.py", "/root/service-worker.py", copy=True)
 )
 
 
@@ -197,8 +205,10 @@ def run_job(job_id: str, payload: dict[str, Any]) -> None:
     state = _read_state(job_id)
     if not state or state["status"] == "cancelled":
         return
-    state.update(status="running", startedAt=time.time())
+    now = time.time()
+    state.update(status="running", startedAt=now, workerStartedAt=now, workerHeartbeatAt=now)
     _write_state(state)
+    print(json.dumps({"event": "worker_started", "jobId": job_id, "modalCallId": state.get("modalCallId"), "elapsedSec": 0}), flush=True)
     try:
         _ensure_models()
         import subprocess
@@ -209,16 +219,28 @@ def run_job(job_id: str, payload: dict[str, Any]) -> None:
                 try:
                     with urllib.request.urlopen("http://127.0.0.1:8188/system_stats", timeout=3): break
                 except Exception: time.sleep(2)
-            result = run_ltx_job(payload, job_id)
+            # The worker source is packaged into the GPU image at /root/service-worker.py.
+            # Import it only after the GPU container has initialized.
+            worker_path = Path("/root/service-worker.py")
+            if not worker_path.exists():
+                raise RuntimeError("Modal worker.py was not packaged in the GPU image")
+            import importlib.util
+            worker_spec = importlib.util.spec_from_file_location("nullsector_worker", worker_path)
+            if worker_spec is None or worker_spec.loader is None:
+                raise RuntimeError("Modal worker module could not be loaded")
+            worker_module = importlib.util.module_from_spec(worker_spec)
+            worker_spec.loader.exec_module(worker_module)
+            result = worker_module.run_ltx_job(payload, job_id)
         finally:
             comfy.terminate()
         state.update(status="completed", completedAt=time.time(), resultPath=result["resultPath"], result=result["result"], promptId=result["promptId"], durationSec=result["durationSec"])
         _write_state(state)
+        print(json.dumps({"event": "worker_completed", "jobId": job_id, "modalCallId": state.get("modalCallId"), "elapsedSec": result["durationSec"]}), flush=True)
     except TimeoutError as exc:
-        state.update(status="failed", completedAt=time.time(), error={"code": "TIMEOUT", "message": str(exc)[:500]})
+        state.update(status="failed", failedAt=time.time(), completedAt=time.time(), error={"code": "TIMEOUT", "message": str(exc)[:500]})
         _write_state(state)
     except Exception as exc:
-        state.update(status="failed", completedAt=time.time(), error={"code": "GENERATION_FAILED", "message": str(exc)[:500]})
+        state.update(status="failed", failedAt=time.time(), completedAt=time.time(), error={"code": "GENERATION_FAILED", "message": str(exc)[:500]})
         _write_state(state)
 
 
@@ -248,8 +270,60 @@ async def create_job(payload: JobRequest, authorization: str | None = Header(def
         job_id = f"job_{secrets.token_urlsafe(16)}"
         state = {"id": job_id, "providerJobId": job_id, "idempotencyKey": idempotency_key, "requestHash": request_hash, "request": payload.model_dump(), "status": "queued", "createdAt": time.time()}
         _write_state(state)
-    run_job.spawn(job_id, payload.model_dump())
-    return JSONResponse(status_code=202, content={"id": job_id, "providerJobId": job_id, "status": "queued"})
+    try:
+        function_call = run_job.spawn(job_id, payload.model_dump())
+        invocation_id = getattr(function_call, "object_id", None)
+        if invocation_id:
+            state["modalCallId"] = invocation_id
+            state["spawnRequestedAt"] = time.time()
+            _write_state(state)
+    except Exception as exc:
+        state.update(status="failed", failedAt=time.time(), completedAt=time.time(), error={"code": "DISPATCH_FAILED", "message": "Modal worker dispatch failed"})
+        _write_state(state)
+        return _error("DISPATCH_FAILED", "Modal worker dispatch failed", 503)
+    return JSONResponse(status_code=202, content={"id": job_id, "providerJobId": job_id, "status": "queued", "modalCallId": state.get("modalCallId")})
+
+
+@web.post("/v1/jobs/{job_id}/reconcile")
+async def reconcile_job(job_id: str, authorization: str | None = Header(default=None)):
+    _authorize(authorization)
+    state = _read_state(job_id)
+    if not state:
+        return _error("NOT_FOUND", "job not found", 404)
+    call_id = state.get("modalCallId")
+    if not call_id:
+        state["reconciliation"] = "unknown"
+        _write_state(state)
+        return {"id": job_id, "status": state["status"], "reconciliation": "unknown", "message": "No Modal invocation identity is recorded"}
+    try:
+        call = modal.FunctionCall.from_id(call_id)
+        state["reconciliation"] = "invocation_found"
+        state["reconciledAt"] = time.time()
+        _write_state(state)
+        return {"id": job_id, "status": state["status"], "reconciliation": "invocation_found", "modalCallId": call_id}
+    except Exception:
+        state["reconciliation"] = "invocation_unknown"
+        state["reconciledAt"] = time.time()
+        _write_state(state)
+        return {"id": job_id, "status": state["status"], "reconciliation": "invocation_unknown", "message": "Modal invocation could not be observed; no retry was attempted"}
+
+
+@web.post("/v1/jobs/{job_id}/cancel")
+async def cancel_job_post(job_id: str, authorization: str | None = Header(default=None)):
+    _authorize(authorization)
+    state = _read_state(job_id)
+    if not state:
+        return _error("NOT_FOUND", "job not found", 404)
+    if state["status"] in {"completed", "failed", "cancelled"}:
+        return {"id": job_id, "status": state["status"]}
+    if state.get("modalCallId"):
+        try:
+            modal.FunctionCall.from_id(state["modalCallId"]).cancel()
+        except Exception:
+            pass
+    state.update(status="cancelled", cancelledAt=time.time())
+    _write_state(state)
+    return {"id": job_id, "status": "cancelled"}
 
 
 @web.get("/v1/jobs/{job_id}")
@@ -261,6 +335,9 @@ async def get_job(job_id: str, authorization: str | None = Header(default=None))
     result = {"id": state["id"], "providerJobId": state["providerJobId"], "status": state["status"]}
     if state.get("progress") is not None:
         result["progress"] = state["progress"]
+    for field in ("modalCallId", "spawnRequestedAt", "workerStartedAt", "workerHeartbeatAt", "completedAt", "failedAt", "reconciliation"):
+        if state.get(field) is not None:
+            result[field] = state[field]
     if state["status"] == "completed":
         result["result"] = state["result"]
     if state["status"] == "failed":
@@ -295,7 +372,7 @@ async def get_result(job_id: str, authorization: str | None = Header(default=Non
     return FileResponse(path, media_type="video/mp4", filename=state["result"]["filename"])
 
 
-@app.function(image=modal.Image.debian_slim(python_version="3.11").pip_install("fastapi", "pydantic"), secrets=[service_secret])
+@app.function(image=modal.Image.debian_slim(python_version="3.11").pip_install("fastapi", "pydantic"), secrets=[service_secret], volumes={"/state": state_volume})
 @modal.asgi_app()
 def api():
     return web
