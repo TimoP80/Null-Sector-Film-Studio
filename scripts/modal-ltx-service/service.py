@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pathlib import Path
 
-SERVICE_SOURCE_REVISION = "diagnostic-current-source-v1"
+SERVICE_SOURCE_REVISION = "diagnostic-current-source-v2"
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 6 * 1024 * 1024
@@ -37,19 +37,23 @@ MAX_QUEUE = 8
 MAX_CONCURRENT = 1
 DEFAULT_TIMEOUT = 900
 
-import os as _os
-app = modal.App(_os.environ.get("MODAL_APP_NAME", "nullsector-ltx-http"))
+app = modal.App(os.environ.get("MODAL_APP_NAME", "nullsector-ltx-http"))
 state_volume = modal.Volume.from_name("nullsector-ltx-service-state", create_if_missing=True)
 models_volume = modal.Volume.from_name("nullsector-ltx-service-models", create_if_missing=True)
+results_volume = modal.Volume.from_name("nullsector-ltx-service-results", create_if_missing=True)
 service_secret = modal.Secret.from_name("nullsector-ltx-http", required_keys=["MODAL_LTX_TOKEN"])
 
 web = FastAPI(title="Null Sector LTX", docs_url=None, redoc_url=None)
 
 @web.get("/diagnostic")
 async def diagnostic():
-    return {"service": "nullsector-ltx-http", "sourceRevision": SERVICE_SOURCE_REVISION, "status": "ok"}
+    return {
+        "service": "nullsector-ltx-http",
+        "sourceRevision": SERVICE_SOURCE_REVISION,
+        "status": "ok",
+    }
+
 _lock = threading.Lock()
-_active = 0
 
 class JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -115,8 +119,8 @@ def _write_state(state: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, separators=(",", ":")))
     tmp.replace(path)
-    # The ASGI function does not mount the state volume. The GPU worker commits
-    # its attached volume after updating state.
+    # Modal Volume changes are committed by the process that owns the volume.
+    state_volume.commit()
 
 
 def _request_hash(payload: JobRequest) -> str:
@@ -156,7 +160,8 @@ def _ensure_models() -> None:
         ("comfyanonymous/flux_text_encoders", "t5xxl_fp8_e4m3fn.safetensors", Path("/models/text_encoders/t5xxl_fp8_e4m3fn.safetensors")),
     ]
     for repo, name, dest in files:
-        if dest.exists() and dest.stat().st_size > 0: continue
+        if dest.exists() and dest.stat().st_size > 0:
+            continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = hf_hub_download(repo, name, token=os.environ.get("HF_TOKEN") or None, cache_dir=str(dest.parent))
         shutil.copyfile(os.path.realpath(tmp), dest)
@@ -197,7 +202,7 @@ worker_image = (
 @app.function(
     image=worker_image,
     gpu="L4",
-    volumes={"/state": state_volume, "/models": models_volume},
+    volumes={"/state": state_volume, "/models": models_volume, "/results": results_volume},
     secrets=[service_secret],
     timeout=DEFAULT_TIMEOUT,
 )
@@ -211,16 +216,17 @@ def run_job(job_id: str, payload: dict[str, Any]) -> None:
     print(json.dumps({"event": "worker_started", "jobId": job_id, "modalCallId": state.get("modalCallId"), "elapsedSec": 0}), flush=True)
     try:
         _ensure_models()
-        import subprocess
         comfy = subprocess.Popen(["python", "main.py", "--port", "8188", "--listen", "127.0.0.1"], cwd="/comfyui", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             deadline = time.time() + 600
             while time.time() < deadline:
                 try:
-                    with urllib.request.urlopen("http://127.0.0.1:8188/system_stats", timeout=3): break
-                except Exception: time.sleep(2)
-            # The worker source is packaged into the GPU image at /root/service-worker.py.
-            # Import it only after the GPU container has initialized.
+                    with urllib.request.urlopen("http://127.0.0.1:8188/system_stats", timeout=3):
+                        break
+                except Exception:
+                    time.sleep(2)
+            else:
+                raise TimeoutError("ComfyUI did not become ready within 600 seconds")
             worker_path = Path("/root/service-worker.py")
             if not worker_path.exists():
                 raise RuntimeError("Modal worker.py was not packaged in the GPU image")
@@ -258,12 +264,18 @@ async def create_job(payload: JobRequest, authorization: str | None = Header(def
         return _error("INVALID_REQUEST", "Idempotency-Key is required", 400)
     request_hash = _request_hash(payload)
     with _lock:
-        existing = next((p for p in Path("/state").glob("*.json") if p.is_file() and _read_state(p.stem).get("idempotencyKey") == idempotency_key), None)
+        existing = None
+        for path in Path("/state").glob("*.json"):
+            if not path.is_file():
+                continue
+            prior = _read_state(path.stem)
+            if prior and prior.get("idempotencyKey") == idempotency_key:
+                existing = prior
+                break
         if existing:
-            prior = _read_state(existing.stem)
-            if prior["requestHash"] != request_hash:
+            if existing["requestHash"] != request_hash:
                 return _error("IDEMPOTENCY_CONFLICT", "Idempotency-Key was used with a different request", 409)
-            return {"id": prior["id"], "providerJobId": prior["id"], "status": prior["status"]}
+            return {"id": existing["id"], "providerJobId": existing["id"], "status": existing["status"]}
         jobs = list(Path("/state").glob("*.json"))
         if len(jobs) >= MAX_QUEUE + MAX_CONCURRENT:
             return _error("QUEUE_FULL", "LTX queue is full", 429)
@@ -277,7 +289,7 @@ async def create_job(payload: JobRequest, authorization: str | None = Header(def
             state["modalCallId"] = invocation_id
             state["spawnRequestedAt"] = time.time()
             _write_state(state)
-    except Exception as exc:
+    except Exception:
         state.update(status="failed", failedAt=time.time(), completedAt=time.time(), error={"code": "DISPATCH_FAILED", "message": "Modal worker dispatch failed"})
         _write_state(state)
         return _error("DISPATCH_FAILED", "Modal worker dispatch failed", 503)
@@ -296,7 +308,7 @@ async def reconcile_job(job_id: str, authorization: str | None = Header(default=
         _write_state(state)
         return {"id": job_id, "status": state["status"], "reconciliation": "unknown", "message": "No Modal invocation identity is recorded"}
     try:
-        call = modal.FunctionCall.from_id(call_id)
+        modal.FunctionCall.from_id(call_id)
         state["reconciliation"] = "invocation_found"
         state["reconciledAt"] = time.time()
         _write_state(state)
@@ -352,7 +364,7 @@ async def cancel_job(job_id: str, authorization: str | None = Header(default=Non
     if not state:
         return _error("NOT_FOUND", "job not found", 404)
     if state["status"] in {"completed", "failed", "cancelled"}:
-        return {"id": job_id, "providerJobId": job_id, "status": state["status"]}
+        return {"id": state["id"], "providerJobId": state["providerJobId"], "status": state["status"]}
     state.update(status="cancelled", cancelledAt=time.time())
     _write_state(state)
     return {"id": job_id, "providerJobId": job_id, "status": "cancelled"}
@@ -372,7 +384,11 @@ async def get_result(job_id: str, authorization: str | None = Header(default=Non
     return FileResponse(path, media_type="video/mp4", filename=state["result"]["filename"])
 
 
-@app.function(image=modal.Image.debian_slim(python_version="3.11").pip_install("fastapi", "pydantic"), secrets=[service_secret], volumes={"/state": state_volume})
+@app.function(
+    image=modal.Image.debian_slim(python_version="3.11").pip_install("fastapi", "pydantic"),
+    secrets=[service_secret],
+    volumes={"/state": state_volume, "/results": results_volume},
+)
 @modal.asgi_app()
 def api():
     return web
